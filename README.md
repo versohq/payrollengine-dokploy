@@ -114,23 +114,65 @@ Two ways:
 
 ## 📥 Import a regulation from your local machine
 
-The stack is intentionally **regulation-agnostic**. Once an instance is up, import from your laptop with the PayrollConsole CLI:
+The stack is intentionally **regulation-agnostic**. Once an instance is up, import a regulation from your laptop — the easiest path is a throwaway Docker image that builds the PayrollConsole from upstream (same nuget.org workaround as the backend), so you don't need a local .NET SDK install.
 
-```bash
-cd ~/my-regulation/2026            # directory containing Setup.pecmd + Regulation/*.json
+### 1. Build the PayrollConsole image once
 
-PayrollApiConnection="BaseUrl=https://payroll-demo-fr.catapulte.studio;Port=443;ApiKey=pe_xxxx" \
-  PayrollConsole Setup.pecmd
+Save as `Dockerfile.payrollconsole` somewhere (e.g. `/tmp`):
+
+```Dockerfile
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG PE_VERSION=0.10.0-beta.4
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+ && git clone --depth 1 --branch main https://github.com/Payroll-Engine/PayrollEngine.PayrollConsole.git .
+RUN find . -name "*.csproj" | xargs sed -i -E \
+    "s|(<PackageReference Include=\"PayrollEngine\.[^\"]*\" Version=\")[^\"]*\"|\1${PE_VERSION}\"|g"
+RUN dotnet restore "PayrollEngine.PayrollConsole.sln"
+WORKDIR /src/PayrollConsole
+RUN dotnet publish "PayrollEngine.PayrollConsole.csproj" -c Release -o /app/publish --no-restore
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app/publish .
+ENTRYPOINT ["dotnet", "/app/PayrollEngine.PayrollConsole.dll"]
 ```
 
-The console reads `PayrollApiConnection` from the env, executes every `PayrollImport` in `Setup.pecmd` against the remote backend. Verify:
+Build (takes ~2 min, cached afterwards):
+
+```bash
+docker build -t payroll-console:local -f /tmp/Dockerfile.payrollconsole /tmp
+```
+
+### 2. Clone the regulation repo
+
+```bash
+cd /tmp
+gh repo clone Payroll-Engine/Regulation.ES.Nomina          # or versohq/Regulation.FR.DirigeantSasu, etc.
+```
+
+### 3. Run `Setup.pecmd` against the deployed instance
+
+```bash
+docker run --rm \
+  -v /tmp/Regulation.ES.Nomina:/regulation:ro \
+  -w /regulation/2026 \
+  -e PayrollApiConnection="BaseUrl=https://payroll-demo-fr.catapulte.studio;Port=443;Timeout=00:05:00;ApiKey=pe_xxxx" \
+  payroll-console:local Setup.pecmd
+```
+
+- The regulation dir is mounted read-only; `-w` sets the working directory to the `<year>/` folder so relative paths in `Setup.pecmd` (`Regulation/*.json`, `../Data.SS.2026/...`) resolve correctly.
+- `PayrollApiConnection` passes the remote HTTPS URL + API key; no token/secret inside the container.
+- The script executes every `PayrollImport` in `Setup.pecmd` sequentially. Expected output: ~15 lines of `Payroll successfully imported from …`, final line `regulation import done` or end-of-file.
+
+### 4. Verify
 
 ```bash
 curl -H "Api-Key: pe_xxxx" https://payroll-demo-fr.catapulte.studio/api/tenants
-# → [{"identifier":"FR.DirigeantSasu",...}]
+# → [{"identifier":"ES.Nomina","culture":"es-ES",...}]
 ```
 
-**Why local**: the regulation source lives in a private git repo, the PayrollConsole is already on your laptop, and keeping secrets out of Dokploy env is worth the 30-second manual step. No GitHub tokens in compose env, no build-time clone of private repos, no credential rotation.
+**Why local**: the regulation source usually lives in a private git repo, and keeping secrets out of Dokploy env is worth the 30-second manual step. No GitHub tokens in compose env, no build-time clone of private repos, no credential rotation.
 
 ---
 
