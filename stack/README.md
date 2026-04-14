@@ -1,65 +1,70 @@
-# Payroll Engine — one-click stack
+# Payroll Engine — Dokploy stack
 
-Spawn a full Payroll Engine instance (Backend API + MySQL + regulation auto-import) on Dokploy in one command.
+Blank Payroll Engine instance (Backend API + MySQL with pre-seeded schema). Regulations are imported **from your local machine** via `PayrollConsole` against the deployed HTTPS API — no secrets inside the stack.
 
 ## What's in the stack
 
 | Service | Image | Role |
 |---|---|---|
 | `mysql` | `mysql:8.0` | Database, auto-seeded from `stack/init/01-Create-Model.mysql.sql` on first boot |
-| `backend` | built locally from `PayrollEngine.Backend/` via `Dockerfile.backend` | REST API, port 8080 |
-| `regulation-import` | built locally from `PayrollEngine.PayrollConsole/` via `Dockerfile.console` | One-shot init job: clones `REGULATION_REPO_URL`, waits for backend, imports via `PayrollImport` |
+| `backend` | built from upstream `Payroll-Engine/PayrollEngine.Backend` via `Dockerfile.backend` | REST API, exposed via Traefik on `${STACK_HOST}` |
 
-Both images are built with `NUGET_SOURCE=nuget.org` only — no GitHub Packages auth needed. See [`Dockerfile.backend`](../Dockerfile.backend) and [`Dockerfile.console`](../Dockerfile.console) for the `.csproj` version patching.
+The Dockerfile builds with `NUGET_SOURCE=nuget.org` only — no GitHub Packages auth needed. `.csproj` PackageReferences are rewritten to the pinned version at build time (see [upstream issue #8](https://github.com/Payroll-Engine/PayrollEngine.Backend/issues/8)).
 
-## Environment variables
+## Spawn an instance (Dokploy UI)
 
-See [`.env.example`](./.env.example). Required:
+1. **Dashboard → Projects → Create Project** (e.g. `payroll-demo-fr`)
+2. In the project, **Create Service → Compose**
+3. **General tab**:
+   - Provider: **Git**
+   - Repository URL: `https://github.com/versohq/payrollengine-deploy`
+   - Branch: `main`
+   - Compose Path: `./docker-compose.yml`
+4. **Environment tab** — paste (replacing values):
+   ```
+   STACK_NAME=payroll-demo-fr
+   STACK_HOST=payroll-demo-fr.catapulte.studio
+   MYSQL_ROOT_PASSWORD=<openssl rand -hex 16>
+   PAYROLL_API_KEY=pe_<openssl rand -hex 24>
+   PE_VERSION=0.10.0-beta.4
+   PE_BACKEND_REF=v0.10.0-beta.4
+   ```
+5. **Deploy** → wait ~3 min (build + MySQL schema init + backend boot)
+6. Verify: `curl -H "Api-Key: $PAYROLL_API_KEY" https://payroll-demo-fr.catapulte.studio/api/tenants` → `[]`
 
-- `STACK_NAME` — used for Traefik router names (must be unique per Dokploy project)
-- `STACK_HOST` — public FQDN (e.g. `demo-es.catapulte.studio`)
-- `MYSQL_ROOT_PASSWORD` — DB password
-- `PAYROLL_API_KEY` — API key the Backend accepts (`Api-Key` header on all requests)
-- `REGULATION_REPO_URL` — public git URL of the regulation to import on first boot
+### Spawning additional instances
 
-Optional:
-- `REGULATION_ENTRY_FILE` — path to the main JSON inside the repo (default: first `*.json` at depth ≤ 2)
-- `PE_VERSION` — PayrollEngine NuGet version to build against (default `0.10.0-beta.4`)
+Either repeat the steps above with a different `STACK_NAME`/`STACK_HOST`, or use Dokploy's **Duplicate Project** action on the environment to clone an existing one and override `STACK_NAME`/`STACK_HOST` in the env tab before redeploying.
+
+## Importing a regulation from your local machine
+
+The stack is intentionally **regulation-agnostic**. Once the instance is up, import from your laptop with the PayrollConsole CLI:
+
+```bash
+cd ~/my-regulation/2026            # contains Setup.pecmd + Regulation/*.json
+
+PayrollApiConnection="BaseUrl=https://payroll-demo-fr.catapulte.studio;Port=443;ApiKey=pe_xxxx" \
+  PayrollConsole Setup.pecmd
+```
+
+The console reads `PayrollApiConnection` from the env, executes every `PayrollImport` in `Setup.pecmd` against the remote backend. Verify with `curl -H "Api-Key: pe_xxxx" https://payroll-demo-fr.catapulte.studio/api/tenants`.
+
+**Why local**: the regulation source lives in a private git repo, the PayrollConsole is already on your laptop, and keeping secrets out of Dokploy env is worth the 30-second manual step.
 
 ## Local test
 
 ```bash
-cd verso-dokploy
 cp stack/.env.example .env    # fill in values
-docker compose up -d --build
-curl http://localhost:8080/swagger/index.html
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+curl -H "Api-Key: $PAYROLL_API_KEY" http://localhost:8090/api/tenants
 ```
 
-The `regulation-import` service exits 0 after a successful import — check its logs:
-```bash
-docker compose logs regulation-import
-```
-
-## Spawn on Dokploy
-
-One-time template bootstrap (first run creates `payroll-template` project):
-```bash
-./stack/scripts/spawn-stack.sh bootstrap
-```
-
-Spawn a new instance by duplicating the template:
-```bash
-./stack/scripts/spawn-stack.sh spawn demo-es https://github.com/Payroll-Engine/Regulation.ES.Nomina
-```
-
-The script reads `.env` at the repo root for `DOKPLOY_URL` and `DOKPLOY_STUDIO_API_KEY` and calls the tRPC API (`project.duplicate` + `compose.update`).
-
-After ~3 minutes the instance is live at `https://<stack>.catapulte.studio`.
+`docker-compose.local.yml` adds the host port binding (Traefik handles routing on Dokploy).
 
 ## Regenerating the MySQL seed
 
-If the Backend bumps its schema version, re-run:
+If the Backend bumps its schema version:
 ```bash
 ./stack/scripts/sync-init.sh
 ```
-This copies `PayrollEngine.Backend/Database/Create-Model.mysql.sql` to `stack/init/01-Create-Model.mysql.sql` (the file is self-contained — it already bundles all tables, functions, and stored procedures).
+Copies `PayrollEngine.Backend/Database/Create-Model.mysql.sql` to `stack/init/01-Create-Model.mysql.sql` (self-contained — tables, functions, stored procs).
