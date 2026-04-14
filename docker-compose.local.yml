@@ -1,0 +1,9 @@
+# Local override — adds host port binding for docker compose up on laptop.
+# Dokploy deployments use Traefik and don't need this.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+services:
+  backend:
+    ports:
+      - "${BACKEND_PORT:-8090}:8080"

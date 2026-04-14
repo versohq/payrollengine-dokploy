@@ -37,8 +37,6 @@ services:
       PayrollServerConfiguration__EnableSwagger: "true"
       Authentication__Mode: ApiKey
       Authentication__ApiKey: ${PAYROLL_API_KEY:?required}
-    ports:
-      - "${BACKEND_PORT:-8080}:8080"
     networks:
       - default
       - dokploy-network
