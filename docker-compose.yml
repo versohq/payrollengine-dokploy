@@ -39,8 +39,12 @@ services:
       Authentication__ApiKey: ${PAYROLL_API_KEY:?required}
     ports:
       - "${BACKEND_PORT:-8080}:8080"
+    networks:
+      - default
+      - dokploy-network
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
       - "traefik.http.routers.${STACK_NAME:-payroll}-backend.rule=Host(`${STACK_HOST:-payroll.localhost}`)"
       - "traefik.http.routers.${STACK_NAME:-payroll}-backend.entrypoints=websecure"
       - "traefik.http.routers.${STACK_NAME:-payroll}-backend.tls.certresolver=letsencrypt"
@@ -121,3 +125,8 @@ services:
 volumes:
   mysql-data:
   regulation-data:
+
+networks:
+  default:
+  dokploy-network:
+    external: true
